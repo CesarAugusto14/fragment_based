@@ -21,8 +21,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Descriptors, QED, Crippen, AllChem, BRICS
-from sklearn.manifold import MDS
-from sklearn.metrics.pairwise import cosine_distances
 
 from fragmentation import BRICSFragmentLibrary
 
@@ -678,7 +676,7 @@ class SmartChemicalGA:
         return parent1, parent2
     
     def fitness(self, smiles: str) -> float:
-        """Enhanced fitness with diversity consideration"""
+        """Fitness function for chemical-based GA"""
         if not smiles:
             return 0
             
@@ -811,121 +809,6 @@ class SmartChemicalGA:
                     })
         return valid_data
     
-    def plot_mds_evolution(self, all_generation_data: List[List[Dict]]):
-        """Plot MDS evolution of chemical space"""
-        if not all_generation_data:
-            print("No valid molecules found across generations")
-            return
-        
-        print("Creating combined MDS plot...")
-        
-        # Collect all unique valid SMILES across all generations
-        all_smiles = []
-        generation_labels = []
-        qed_scores = []
-        
-        for gen_data in all_generation_data:
-            for mol_data in gen_data:
-                all_smiles.append(mol_data['smiles'])
-                generation_labels.append(mol_data['generation'])
-                qed_scores.append(mol_data['qed'])
-        
-        if len(all_smiles) < 2:
-            print("Not enough valid molecules for MDS analysis")
-            return
-        
-        # Check for duplicates
-        unique_smiles = list(set(all_smiles))
-        if len(unique_smiles) < 2:
-            print("Not enough unique valid molecules for MDS analysis")
-            return
-        
-        print(f"Computing ECFP4 fingerprints for {len(all_smiles)} molecules...")
-        
-        # Calculate ECFP4 fingerprints
-        fingerprints = []
-        valid_indices = []
-        
-        for i, smiles in enumerate(all_smiles):
-            try:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-                    fingerprints.append(np.array(fp))
-                    valid_indices.append(i)
-            except:
-                continue
-        
-        if len(fingerprints) < 2:
-            print("Not enough valid fingerprints for MDS")
-            return
-        
-        fingerprints = np.array(fingerprints)
-        
-        # Filter corresponding data for valid fingerprints
-        filtered_generations = [generation_labels[i] for i in valid_indices]
-        filtered_qed = [qed_scores[i] for i in valid_indices]
-        filtered_smiles = [all_smiles[i] for i in valid_indices]
-        
-        print(f"Computing MDS for {len(fingerprints)} valid molecules...")
-        
-        # Calculate cosine distances
-        distances = cosine_distances(fingerprints)
-        
-        # Perform MDS
-        mds = MDS(n_components=2, dissimilarity='precomputed', random_state=42, verbose=1)
-        coords = mds.fit_transform(distances)
-        
-        # Create the plot
-        plt.figure(figsize=(12, 10))
-        
-        # Get unique generations and create a color map
-        unique_gens = sorted(set(filtered_generations))
-        colors = plt.cm.tab20(np.linspace(0, 1, len(unique_gens)))
-        
-        # Plot each generation with different colors
-        for i, gen in enumerate(unique_gens):
-            gen_mask = np.array(filtered_generations) == gen
-            gen_coords = coords[gen_mask]
-            gen_qed = np.array(filtered_qed)[gen_mask]
-            
-            scatter = plt.scatter(gen_coords[:, 0], gen_coords[:, 1], 
-                                c=colors[i], label=f'Generation {gen}', 
-                                alpha=0.7, s=50, edgecolors='black', linewidth=0.5)
-        
-        plt.xlabel('MDS Dimension 1', fontsize=12)
-        plt.ylabel('MDS Dimension 2', fontsize=12)
-        plt.title('Smart GA Chemical Space Evolution\n(MDS of ECFP4 Fingerprints, Colored by Generation)', 
-                  fontsize=14)
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'mds_evolution_combined.png'), 
-                    dpi=300, bbox_inches='tight')
-        plt.show()
-        
-        # Create a second plot colored by QED score for comparison
-        plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(coords[:, 0], coords[:, 1], 
-                            c=filtered_qed, cmap='viridis', 
-                            alpha=0.7, s=50, edgecolors='black', linewidth=0.5)
-        plt.colorbar(scatter, label='QED Score')
-        plt.xlabel('MDS Dimension 1', fontsize=12)
-        plt.ylabel('MDS Dimension 2', fontsize=12)
-        plt.title('Smart GA Chemical Space - All Valid Molecules\n(Colored by QED Score)', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'mds_evolution_qed.png'), 
-                    dpi=300, bbox_inches='tight')
-        plt.show()
-        
-        print(f"MDS plots saved to {self.output_dir}/")
-        print(f"Total molecules plotted: {len(coords)}")
-        print(f"Generations: {min(unique_gens)} to {max(unique_gens)}")
-        print(f"QED range: {min(filtered_qed):.3f} to {max(filtered_qed):.3f}")
-    
     def run_ga(self) -> List[Dict]:
         """Run the enhanced genetic algorithm with smart operators"""
         print("Starting Smart Chemical GA...")
@@ -951,7 +834,7 @@ class SmartChemicalGA:
         
         print(f"Initial population: {len(population)} valid molecules")
         
-        # Store all generation data for combined MDS
+        # Store all generation data
         all_generation_data = []
         
         # Evolution loop
@@ -961,7 +844,7 @@ class SmartChemicalGA:
             # Save generation data to file
             self.save_generation_data(gen + 1, population)
             
-            # Collect valid molecules for MDS
+            # Collect valid molecules for tracking
             gen_data = self.collect_generation_data(gen + 1, population)
             all_generation_data.append(gen_data)
             
@@ -1075,14 +958,10 @@ class SmartChemicalGA:
                 print(f"Crossover success rate: {100*crossover_successes/total_operations:.1f}%")
                 print(f"Mutation success rate: {100*mutation_successes/(total_operations*2):.1f}%")
         
-        # Create combined MDS plot after GA completes
-        print("\nCreating combined MDS evolution plot...")
-        self.plot_mds_evolution(all_generation_data)
-        
         return self.generation_stats
     
     def plot_evolution(self):
-        """Plot the enhanced evolution progress with diversity metrics"""
+        """Plot the enhanced evolution progress with separate QED and Lipinski plots"""
         if not self.generation_stats:
             print("No evolution data to plot")
             return
@@ -1090,103 +969,160 @@ class SmartChemicalGA:
         generations = [s['generation'] for s in self.generation_stats]
         best_fitnesses = [s['best_fitness'] for s in self.generation_stats]
         avg_fitnesses = [s['avg_fitness'] for s in self.generation_stats]
-        diversities = [s['diversity'] for s in self.generation_stats]
-        unique_counts = [s['unique_molecules'] for s in self.generation_stats]
-        
-        plt.figure(figsize=(15, 10))
-        
-        # Fitness evolution
-        plt.subplot(2, 3, 1)
-        plt.plot(generations, best_fitnesses, 'b-', label='Best Fitness', linewidth=2)
-        plt.plot(generations, avg_fitnesses, 'r--', label='Average Fitness', linewidth=2)
-        plt.xlabel('Generation')
-        plt.ylabel('Fitness Score')
-        plt.title('Fitness Evolution')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Diversity evolution
-        plt.subplot(2, 3, 2)
-        plt.plot(generations, diversities, 'g-', label='Diversity Score', linewidth=2)
-        plt.xlabel('Generation')
-        plt.ylabel('Diversity Score')
-        plt.title('Population Diversity')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Unique molecules
-        plt.subplot(2, 3, 3)
-        plt.plot(generations, unique_counts, 'm-', label='Unique Molecules', linewidth=2)
-        plt.axhline(y=self.population_size, color='k', linestyle='--', alpha=0.5, label='Max Possible')
-        plt.xlabel('Generation')
-        plt.ylabel('Unique Molecules')
-        plt.title('Population Uniqueness')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Best molecules over time (last 5 generations)
-        plt.subplot(2, 3, 4)
-        final_stats = self.generation_stats[-5:]
-        
-        qed_scores = []
-        lipinski_violations = []
-        
-        for stat in final_stats:
-            mol_smiles = stat['best_molecule']
-            try:
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    qed = QED.qed(mol)
-                    
-                    # Calculate Lipinski violations
-                    mw = Descriptors.MolWt(mol)
-                    logp = Crippen.MolLogP(mol)
-                    hbd = Descriptors.NumHDonors(mol)
-                    hba = Descriptors.NumHAcceptors(mol)
-                    
-                    violations = sum([mw > 500, logp > 5, hbd > 5, hba > 10])
-                    
-                    qed_scores.append(qed)
-                    lipinski_violations.append(violations)
-            except:
-                qed_scores.append(0)
-                lipinski_violations.append(4)
-        
-        gen_labels = [f"Gen {s['generation']}" for s in final_stats]
-        
-        x = range(len(gen_labels))
-        plt.bar([i - 0.2 for i in x], qed_scores, 0.4, label='QED Score', alpha=0.7)
-        plt.bar([i + 0.2 for i in x], [1 - v/4 for v in lipinski_violations], 0.4, 
-                label='Lipinski Compliance', alpha=0.7)
-        
-        plt.xlabel('Generation')
-        plt.ylabel('Score')
-        plt.title('Drug-likeness Metrics')
-        plt.xticks(x, gen_labels, rotation=45)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Duplicate molecules tracking
-        plt.subplot(2, 3, 5)
         max_duplicates = [s['max_duplicates'] for s in self.generation_stats]
-        plt.plot(generations, max_duplicates, 'orange', label='Max Duplicates', linewidth=2)
-        plt.axhline(y=self.max_identical, color='r', linestyle='--', alpha=0.7, label=f'Limit ({self.max_identical})')
-        plt.xlabel('Generation')
-        plt.ylabel('Max Duplicate Count')
-        plt.title('Duplication Control')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
         
-        # Combined metrics
-        plt.subplot(2, 3, 6)
-        validity_rates = [s['validity_rate'] for s in self.generation_stats]
-        plt.plot(generations, validity_rates, 'purple', label='Validity Rate', linewidth=2)
-        plt.plot(generations, [u/self.population_size for u in unique_counts], 'cyan', label='Uniqueness Rate', linewidth=2)
-        plt.xlabel('Generation')
-        plt.ylabel('Rate')
-        plt.title('Population Quality Metrics')
-        plt.legend()
+        # Create figure with 2x2 layout
+        fig = plt.figure(figsize=(16, 12))
+        
+        # Top left: Fitness Evolution
+        ax1 = plt.subplot(2, 2, 1)
+        plt.plot(generations, best_fitnesses, 'b-', label='Best Fitness', linewidth=3)
+        plt.plot(generations, avg_fitnesses, 'r--', label='Average Fitness', linewidth=3)
+        plt.xlabel('Generation', fontsize=14)
+        plt.ylabel('Fitness Score', fontsize=14)
+        plt.title('Fitness Evolution', fontsize=16, fontweight='bold')
+        plt.legend(fontsize=12)
         plt.grid(True, alpha=0.3)
+        plt.tick_params(axis='both', which='major', labelsize=12)
+        
+        # Top right: Duplication Control
+        ax2 = plt.subplot(2, 2, 2)
+        plt.plot(generations, max_duplicates, 'orange', label='Max Duplicates', linewidth=3)
+        plt.axhline(y=self.max_identical, color='r', linestyle='--', alpha=0.7, 
+                   label=f'Limit ({self.max_identical})', linewidth=2)
+        plt.xlabel('Generation', fontsize=14)
+        plt.ylabel('Max Duplicate Count', fontsize=14)
+        plt.title('Duplication Control', fontsize=16, fontweight='bold')
+        plt.legend(fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.tick_params(axis='both', which='major', labelsize=12)
+        
+        # Calculate population statistics for each generation
+        qed_means = []
+        qed_stds = []
+        qed_maxs = []
+        qed_mins = []
+        lipinski_means = []
+        lipinski_stds = []
+        lipinski_maxs = []
+        lipinski_mins = []
+        all_generations = []
+        
+        # Read all generation files to get population statistics
+        for gen in range(1, len(self.generation_stats) + 1):
+            filename = os.path.join(self.output_dir, f"generation_{gen:03d}.txt")
+            all_generations.append(gen)
+            
+            try:
+                # Read generation file
+                qed_scores = []
+                lipinski_scores = []
+                
+                with open(filename, 'r') as f:
+                    lines = f.readlines()[1:]  # Skip header
+                    for line in lines:
+                        parts = line.strip().split('\t')
+                        if len(parts) >= 7 and parts[1] == 'True':  # Valid molecule
+                            qed = float(parts[2])
+                            # Calculate Lipinski compliance from MW, LogP, HBA, HBD
+                            mw = float(parts[4])
+                            logp = float(parts[3])
+                            hba = int(parts[5])
+                            hbd = int(parts[6])
+                            
+                            violations = sum([mw > 500, logp > 5, hbd > 5, hba > 10])
+                            compliance = (4 - violations) / 4.0
+                            
+                            qed_scores.append(qed)
+                            lipinski_scores.append(compliance)
+                
+                if qed_scores:  # If we have valid data
+                    qed_means.append(np.mean(qed_scores))
+                    qed_stds.append(np.std(qed_scores))
+                    qed_maxs.append(np.max(qed_scores))
+                    qed_mins.append(np.min(qed_scores))
+                    
+                    lipinski_means.append(np.mean(lipinski_scores))
+                    lipinski_stds.append(np.std(lipinski_scores))
+                    lipinski_maxs.append(np.max(lipinski_scores))
+                    lipinski_mins.append(np.min(lipinski_scores))
+                else:
+                    # Fallback if no valid data
+                    qed_means.append(0)
+                    qed_stds.append(0)
+                    qed_maxs.append(0)
+                    qed_mins.append(0)
+                    lipinski_means.append(0)
+                    lipinski_stds.append(0)
+                    lipinski_maxs.append(0)
+                    lipinski_mins.append(0)
+                    
+            except (FileNotFoundError, ValueError, IndexError):
+                # Fallback for missing or corrupted files
+                qed_means.append(0)
+                qed_stds.append(0)
+                qed_maxs.append(0)
+                qed_mins.append(0)
+                lipinski_means.append(0)
+                lipinski_stds.append(0)
+                lipinski_maxs.append(0)
+                lipinski_mins.append(0)
+        
+        # Convert to numpy arrays for easier manipulation
+        qed_means = np.array(qed_means)
+        qed_stds = np.array(qed_stds)
+        qed_maxs = np.array(qed_maxs)
+        qed_mins = np.array(qed_mins)
+        lipinski_means = np.array(lipinski_means)
+        lipinski_stds = np.array(lipinski_stds)
+        lipinski_maxs = np.array(lipinski_maxs)
+        lipinski_mins = np.array(lipinski_mins)
+        
+        # Bottom left: QED Statistics
+        ax3 = plt.subplot(2, 2, 3)
+        # Shaded region for mean ± std
+        plt.fill_between(all_generations, qed_means - qed_stds, qed_means + qed_stds, 
+                        alpha=0.3, color='blue', label='Mean ± Std Dev')
+        # Mean line
+        plt.plot(all_generations, qed_means, 'b-', label='Mean', linewidth=3)
+        # Max/Min lines
+        plt.plot(all_generations, qed_maxs, 'b--', label='Maximum', linewidth=2, alpha=0.8)
+        plt.plot(all_generations, qed_mins, 'b:', label='Minimum', linewidth=2, alpha=0.8)
+        
+        # Reference lines
+        plt.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, linewidth=2)
+        plt.axhline(y=0.8, color='gray', linestyle=':', alpha=0.7, linewidth=2)
+        
+        plt.xlabel('Generation', fontsize=14)
+        plt.ylabel('QED Score', fontsize=14)
+        plt.title('QED Population Statistics', fontsize=16, fontweight='bold')
+        plt.ylim(-0.05, 1.05)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tick_params(axis='both', which='major', labelsize=12)
+        
+        # Bottom right: Lipinski Statistics
+        ax4 = plt.subplot(2, 2, 4)
+        # Shaded region for mean ± std
+        plt.fill_between(all_generations, lipinski_means - lipinski_stds, lipinski_means + lipinski_stds, 
+                        alpha=0.3, color='green', label='Mean ± Std Dev')
+        # Mean line
+        plt.plot(all_generations, lipinski_means, 'g-', label='Mean', linewidth=3)
+        # Max/Min lines
+        plt.plot(all_generations, lipinski_maxs, 'g--', label='Maximum', linewidth=2, alpha=0.8)
+        plt.plot(all_generations, lipinski_mins, 'g:', label='Minimum', linewidth=2, alpha=0.8)
+        
+        # Reference lines
+        plt.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, linewidth=2)
+        plt.axhline(y=0.8, color='gray', linestyle=':', alpha=0.7, linewidth=2)
+        
+        plt.xlabel('Generation', fontsize=14)
+        plt.ylabel('Lipinski Compliance', fontsize=14)
+        plt.title('Lipinski Population Statistics', fontsize=16, fontweight='bold')
+        plt.ylim(-0.05, 1.05)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tick_params(axis='both', which='major', labelsize=12)
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.output_dir, 'smart_ga_evolution.png'), dpi=300, bbox_inches='tight')
@@ -1235,7 +1171,7 @@ if __name__ == "__main__":
     smart_ga = SmartChemicalGA(
         fragment_library=frag_lib,
         population_size=100,
-        generations=100,
+        generations=50,
         mutation_rate=0.5,
         crossover_rate=0.5,
         diversity_weight=0.2,
