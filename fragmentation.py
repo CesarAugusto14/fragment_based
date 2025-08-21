@@ -473,7 +473,7 @@ if __name__ == "__main__":
         
         # Build fragment library (start with subset for testing)
         print("\nBuilding fragment library...")
-        fragments = frag_lib.build_fragment_library(smiles_list, max_molecules=100000)  # Start with 10k molecules
+        fragments = frag_lib.build_fragment_library(smiles_list, max_molecules=1000000)  # Start with 10k molecules
         
         # Print comprehensive analysis
         frag_lib.print_library_analysis()
