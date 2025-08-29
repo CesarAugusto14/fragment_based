@@ -233,154 +233,434 @@ class ChemicalSpaceBoundaryDetector:
         boundary_dist = self.calculate_boundary_distance(smiles)
         return boundary_dist > tolerance
     
-    def visualize_boundary_2d(self, sample_molecules: List[str] = None, save_path: str = "boundary_visualization.png"):
-        """Create 2D visualization of chemical space boundary"""
-        if self.reference_pca is None:
+    def visualize_boundary_2d(self, sample_molecules: List[str] = None, save_path: str = "boundary_visualization.png",
+                              method: str = "MDS", show_hull: bool = True):
+        """
+        Create 2D visualization of chemical space boundary using MDS, UMAP, or PCA
+        
+        Args:
+            sample_molecules: Additional molecules to plot
+            save_path: Where to save the plot
+            method: 'MDS', 'UMAP', or 'PCA'
+            show_hull: Whether to show convex hull boundary
+        """
+        if self.reference_fingerprints is None:
             print("No boundary data available for visualization")
             return
         
-        # Use first 2 PCA components for visualization
-        pca_2d = self.reference_pca[:, :2]
+        print(f"Creating 2D visualization using {method}...")
         
-        plt.figure(figsize=(12, 10))
+        # Combine reference molecules with sample molecules
+        all_molecules = []
+        all_fingerprints = []
+        molecule_types = []
         
-        # Plot reference molecules
-        plt.scatter(pca_2d[:, 0], pca_2d[:, 1], c='lightblue', alpha=0.6, s=20, label='Reference Molecules')
+        # Add reference molecules
+        # Note: We don't have original SMILES stored, so we'll skip reference molecules for now
+        # and focus on sample molecules vs boundary
         
-        # Plot centroid
-        centroid_2d = self.centroid[:2]
-        plt.scatter(centroid_2d[0], centroid_2d[1], c='red', s=100, marker='*', label='Centroid', zorder=5)
-        
-        # Plot convex hull if available
-        if self.convex_hull is not None:
-            # Get 2D hull vertices
-            vertices_2d = pca_2d[self.convex_hull.vertices]
-            hull_2d = ConvexHull(vertices_2d)
-            
-            # Plot hull boundary
-            for simplex in hull_2d.simplices:
-                plt.plot(vertices_2d[simplex, 0], vertices_2d[simplex, 1], 'k-', alpha=0.7, linewidth=2)
-            
-            plt.scatter(vertices_2d[:, 0], vertices_2d[:, 1], c='orange', s=50, 
-                       label='Boundary Vertices', zorder=4)
-        
-        # Plot sample molecules if provided
         if sample_molecules:
+            print(f"Processing {len(sample_molecules)} sample molecules...")
             sample_fps = []
-            sample_labels = []
+            valid_sample_smiles = []
             
-            for smiles in sample_molecules[:50]:  # Limit to 50 for clarity
+            for smiles in sample_molecules:
                 try:
                     mol = Chem.MolFromSmiles(smiles)
                     if mol:
                         fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=self.fingerprint_bits)
-                        fp_array = np.array(fp).reshape(1, -1)
-                        fp_scaled = self.scaler.transform(fp_array)
-                        fp_pca = self.pca.transform(fp_scaled)
-                        
-                        sample_fps.append(fp_pca[0, :2])
-                        
-                        # Determine if outside boundary
-                        boundary_dist = self.calculate_boundary_distance(smiles)
-                        sample_labels.append('Outside' if boundary_dist > 0 else 'Inside')
+                        sample_fps.append(np.array(fp))
+                        valid_sample_smiles.append(smiles)
                 except:
                     continue
             
-            if sample_fps:
-                sample_fps = np.array(sample_fps)
+            if len(sample_fps) < 2:
+                print("Not enough valid sample molecules for visualization")
+                return
+            
+            sample_fps = np.array(sample_fps)
+            
+            # Combine with reference fingerprints for joint dimensionality reduction
+            combined_fps = np.vstack([self.reference_fingerprints, sample_fps])
+            
+            # Apply dimensionality reduction
+            if method.upper() == "MDS":
+                from sklearn.metrics.pairwise import cosine_distances
+                print("Computing cosine distances...")
+                distances = cosine_distances(combined_fps)
                 
-                # Color by boundary status
-                colors = ['green' if label == 'Outside' else 'purple' for label in sample_labels]
-                plt.scatter(sample_fps[:, 0], sample_fps[:, 1], c=colors, s=100, alpha=0.8, 
-                           marker='^', label='Sample Molecules', zorder=6)
+                print("Applying MDS...")
+                from sklearn.manifold import MDS
+                reducer = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+                coords_2d = reducer.fit_transform(distances)
+                
+            elif method.upper() == "UMAP":
+                try:
+                    import umap
+                    print("Applying UMAP...")
+                    reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=15)
+                    coords_2d = reducer.fit_transform(combined_fps)
+                except ImportError:
+                    print("UMAP not available, falling back to MDS...")
+                    from sklearn.metrics.pairwise import cosine_distances
+                    distances = cosine_distances(combined_fps)
+                    from sklearn.manifold import MDS
+                    reducer = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+                    coords_2d = reducer.fit_transform(distances)
+                    method = "MDS"
+                    
+            else:  # PCA fallback
+                print("Applying PCA...")
+                from sklearn.preprocessing import StandardScaler
+                scaler = StandardScaler()
+                scaled_fps = scaler.fit_transform(combined_fps)
+                from sklearn.decomposition import PCA
+                reducer = PCA(n_components=2, random_state=42)
+                coords_2d = reducer.fit_transform(scaled_fps)
+            
+            # Split coordinates
+            n_reference = len(self.reference_fingerprints)
+            reference_coords = coords_2d[:n_reference]
+            sample_coords = coords_2d[n_reference:]
+            
+            # Calculate boundary distances for sample molecules
+            boundary_status = []
+            for smiles in valid_sample_smiles:
+                boundary_dist = self.calculate_boundary_distance(smiles)
+                boundary_status.append('Outside' if boundary_dist > 0 else 'Inside')
+            
+            # Create the plot
+            plt.figure(figsize=(12, 10))
+            
+            # Plot reference molecules
+            plt.scatter(reference_coords[:, 0], reference_coords[:, 1], 
+                       c='lightblue', alpha=0.3, s=10, label='Reference Molecules (ZINC)', zorder=1)
+            
+            # Plot sample molecules colored by boundary status
+            outside_mask = np.array(boundary_status) == 'Outside'
+            inside_mask = np.array(boundary_status) == 'Inside'
+            
+            if np.any(outside_mask):
+                plt.scatter(sample_coords[outside_mask, 0], sample_coords[outside_mask, 1], 
+                           c='red', s=60, alpha=0.8, marker='o', 
+                           label='Exploring (Outside Boundary)', zorder=3, edgecolors='darkred')
+            
+            if np.any(inside_mask):
+                plt.scatter(sample_coords[inside_mask, 0], sample_coords[inside_mask, 1], 
+                           c='green', s=60, alpha=0.8, marker='s', 
+                           label='Known Space (Inside Boundary)', zorder=3, edgecolors='darkgreen')
+            
+            # Calculate and plot centroid
+            ref_centroid = np.mean(reference_coords, axis=0)
+            plt.scatter(ref_centroid[0], ref_centroid[1], c='black', s=100, 
+                       marker='*', label='Reference Centroid', zorder=4)
+            
+            # Plot convex hull if requested and using appropriate method
+            if show_hull and method.upper() != "UMAP":  # Hull less meaningful for UMAP
+                try:
+                    from scipy.spatial import ConvexHull
+                    hull = ConvexHull(reference_coords)
+                    
+                    # Plot hull boundary
+                    for simplex in hull.simplices:
+                        plt.plot(reference_coords[simplex, 0], reference_coords[simplex, 1], 
+                                'k-', alpha=0.5, linewidth=1)
+                    
+                    # Highlight hull vertices
+                    hull_vertices = reference_coords[hull.vertices]
+                    plt.scatter(hull_vertices[:, 0], hull_vertices[:, 1], 
+                               c='orange', s=30, label='Boundary Vertices', zorder=2)
+                               
+                except Exception as e:
+                    print(f"Could not plot convex hull: {e}")
+            
+            plt.xlabel(f'{method} Component 1', fontsize=12)
+            plt.ylabel(f'{method} Component 2', fontsize=12)
+            plt.title(f'Chemical Space Exploration Visualization\n({method} of ECFP4 Fingerprints)', 
+                     fontsize=14, fontweight='bold')
+            plt.legend(fontsize=10, loc='upper right')
+            plt.grid(True, alpha=0.3)
+            
+            # Add statistics text
+            n_outside = np.sum(outside_mask)
+            n_inside = np.sum(inside_mask)
+            exploration_rate = n_outside / (n_outside + n_inside) * 100
+            
+            stats_text = f"Molecules: {len(valid_sample_smiles)}\n"
+            stats_text += f"Exploring: {n_outside} ({exploration_rate:.1f}%)\n"
+            stats_text += f"Known Space: {n_inside}"
+            
+            plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                    fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.show()
+            
+            print(f"Visualization saved to: {save_path}")
+            print(f"Exploration rate: {exploration_rate:.1f}%")
+            print(f"Method: {method}")
+            
+        else:
+            print("No sample molecules provided for visualization")
+
+    def visualize_generation_progression(self, all_generation_data: List[List[Dict]], 
+                                       save_path: str = "generation_progression.png",
+                                       method: str = "MDS", max_molecules_per_gen: int = 30):
+        """
+        Visualize how molecules evolve and explore beyond boundaries across generations
         
-        plt.xlabel(f'PCA Component 1 ({self.pca.explained_variance_ratio_[0]:.3f} variance)', fontsize=12)
-        plt.ylabel(f'PCA Component 2 ({self.pca.explained_variance_ratio_[1]:.3f} variance)', fontsize=12)
-        plt.title('Chemical Space Boundary Visualization\n(ECFP4 + PCA + Convex Hull)', fontsize=14, fontweight='bold')
-        plt.legend(fontsize=10)
+        Args:
+            all_generation_data: List of generation data (from GA)
+            save_path: Where to save the plot  
+            method: 'MDS', 'UMAP', or 'PCA'
+            max_molecules_per_gen: Max molecules to plot per generation
+        """
+        if not all_generation_data:
+            print("No generation data provided")
+            return
+            
+        print(f"Visualizing generation progression using {method}...")
+        
+        # Collect molecules from all generations
+        all_smiles = []
+        generation_labels = []
+        boundary_distances = []
+        
+        # Sample molecules from each generation
+        for gen_idx, gen_data in enumerate(all_generation_data[::2]):  # Every other generation
+            if not gen_data:
+                continue
+                
+            # Sample molecules from this generation
+            sample_size = min(max_molecules_per_gen, len(gen_data))
+            if len(gen_data) > sample_size:
+                sampled_data = np.random.choice(gen_data, sample_size, replace=False)
+            else:
+                sampled_data = gen_data
+            
+            for mol_data in sampled_data:
+                all_smiles.append(mol_data['smiles'])
+                generation_labels.append(mol_data['generation'])
+                boundary_distances.append(mol_data.get('boundary_distance', 0))
+        
+        if len(all_smiles) < 5:
+            print("Not enough molecules for progression visualization")
+            return
+        
+        # Calculate fingerprints
+        print(f"Computing fingerprints for {len(all_smiles)} molecules...")
+        fingerprints = []
+        valid_indices = []
+        
+        for i, smiles in enumerate(all_smiles):
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=self.fingerprint_bits)
+                    fingerprints.append(np.array(fp))
+                    valid_indices.append(i)
+            except:
+                continue
+        
+        if len(fingerprints) < 5:
+            print("Not enough valid fingerprints for visualization")
+            return
+        
+        fingerprints = np.array(fingerprints)
+        
+        # Filter corresponding data
+        filtered_generations = [generation_labels[i] for i in valid_indices]
+        filtered_boundary_dist = [boundary_distances[i] for i in valid_indices]
+        filtered_smiles = [all_smiles[i] for i in valid_indices]
+        
+        # Combine with reference fingerprints
+        combined_fps = np.vstack([self.reference_fingerprints[:1000], fingerprints])  # Limit reference for speed
+        
+        # Apply dimensionality reduction
+        print(f"Applying {method} dimensionality reduction...")
+        if method.upper() == "MDS":
+            from sklearn.metrics.pairwise import cosine_distances
+            distances = cosine_distances(combined_fps)
+            from sklearn.manifold import MDS
+            reducer = MDS(n_components=2, dissimilarity='precomputed', random_state=42, n_jobs=-1)
+            coords_2d = reducer.fit_transform(distances)
+            
+        elif method.upper() == "UMAP":
+            try:
+                import umap
+                reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=15)
+                coords_2d = reducer.fit_transform(combined_fps)
+            except ImportError:
+                print("UMAP not available, using MDS...")
+                from sklearn.metrics.pairwise import cosine_distances
+                distances = cosine_distances(combined_fps)
+                from sklearn.manifold import MDS
+                reducer = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+                coords_2d = reducer.fit_transform(distances)
+                method = "MDS"
+                
+        else:  # PCA
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            scaled_fps = scaler.fit_transform(combined_fps)
+            from sklearn.decomposition import PCA  
+            reducer = PCA(n_components=2, random_state=42)
+            coords_2d = reducer.fit_transform(scaled_fps)
+        
+        # Split coordinates
+        reference_coords = coords_2d[:1000]  # Reference molecules
+        molecule_coords = coords_2d[1000:]   # GA molecules
+        
+        # Create the plot
+        plt.figure(figsize=(14, 10))
+        
+        # Plot reference molecules (background)
+        plt.scatter(reference_coords[:, 0], reference_coords[:, 1], 
+                   c='lightgray', alpha=0.2, s=8, label='ZINC Reference', zorder=1)
+        
+        # Get unique generations and create color map
+        unique_gens = sorted(set(filtered_generations))
+        colors = plt.cm.viridis(np.linspace(0, 1, len(unique_gens)))
+        
+        # Plot molecules by generation
+        for i, gen in enumerate(unique_gens):
+            gen_mask = np.array(filtered_generations) == gen
+            gen_coords = molecule_coords[gen_mask]
+            gen_boundary = np.array(filtered_boundary_dist)[gen_mask]
+            
+            # Separate exploring vs non-exploring
+            exploring_mask = gen_boundary > 0
+            
+            if np.any(exploring_mask):
+                plt.scatter(gen_coords[exploring_mask, 0], gen_coords[exploring_mask, 1],
+                           c=[colors[i]], s=80, alpha=0.8, marker='o',
+                           label=f'Gen {gen} (Exploring)', zorder=3, 
+                           edgecolors='black', linewidth=0.5)
+            
+            if np.any(~exploring_mask):
+                plt.scatter(gen_coords[~exploring_mask, 0], gen_coords[~exploring_mask, 1],
+                           c=[colors[i]], s=40, alpha=0.6, marker='s', 
+                           zorder=2, edgecolors='gray', linewidth=0.3)
+        
+        plt.xlabel(f'{method} Component 1', fontsize=12)
+        plt.ylabel(f'{method} Component 2', fontsize=12)
+        plt.title(f'Boundary Exploration Across Generations\n({method} of ECFP4 Fingerprints)', 
+                 fontsize=14, fontweight='bold')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.show()
         
-        print(f"Boundary visualization saved to: {save_path}")
+        print(f"Generation progression saved to: {save_path}")
+        print(f"Generations visualized: {min(unique_gens)} to {max(unique_gens)}")
+        
+        # Calculate exploration statistics by generation
+        exploration_stats = []
+        for gen in unique_gens:
+            gen_mask = np.array(filtered_generations) == gen
+            gen_boundary = np.array(filtered_boundary_dist)[gen_mask] 
+            exploring_count = np.sum(gen_boundary > 0)
+            total_count = len(gen_boundary)
+            exploration_rate = exploring_count / total_count * 100
+            exploration_stats.append((gen, exploration_rate, exploring_count, total_count))
+        
+        print("\nExploration by Generation:")
+        for gen, rate, exploring, total in exploration_stats:
+            print(f"  Gen {gen}: {rate:.1f}% ({exploring}/{total} molecules exploring)")
+            
+        return exploration_stats
 
 class StratifiedZINCLoader:
     """
-    Loads ZINC dataset with stratified sampling based on molecular properties
+    Loads ZINC dataset with efficient random + stratified sampling
     """
     
     def __init__(self, random_state: int = 42):
         self.random_state = random_state
-        self.property_bins = {}
-        self.stratification_features = ['mw_bin', 'logp_bin', 'qed_bin']
         
-    def calculate_molecular_properties(self, smiles_series: pd.Series) -> pd.DataFrame:
-        """Calculate molecular properties for stratification"""
-        print("Calculating molecular properties for stratification...")
+    def calculate_molecular_properties_batch(self, smiles_series: pd.Series, batch_size: int = 1000) -> pd.DataFrame:
+        """Calculate molecular properties in batches for efficiency"""
+        print(f"Calculating molecular properties for {len(smiles_series)} molecules...")
         
         properties = []
         valid_indices = []
         
-        for i, smiles in enumerate(smiles_series):
-            if i % 10000 == 0:
-                print(f"  Processed {i}/{len(smiles_series)} molecules")
-                
-            try:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    props = {
-                        'smiles': smiles,
-                        'mw': Descriptors.MolWt(mol),
-                        'logp': Crippen.MolLogP(mol),
-                        'qed': QED.qed(mol),
-                        'hba': Descriptors.NumHAcceptors(mol),
-                        'hbd': Descriptors.NumHDonors(mol),
-                        'valid': True
-                    }
-                    properties.append(props)
-                    valid_indices.append(i)
-            except:
-                continue
+        # Process in batches to show progress
+        for start_idx in range(0, len(smiles_series), batch_size):
+            end_idx = min(start_idx + batch_size, len(smiles_series))
+            batch_smiles = smiles_series.iloc[start_idx:end_idx]
+            
+            if start_idx % (batch_size * 10) == 0:
+                print(f"  Processed {start_idx}/{len(smiles_series)} molecules ({100*start_idx/len(smiles_series):.1f}%)")
+            
+            for i, smiles in enumerate(batch_smiles):
+                try:
+                    mol = Chem.MolFromSmiles(smiles)
+                    if mol:
+                        props = {
+                            'smiles': smiles,
+                            'mw': Descriptors.MolWt(mol),
+                            'logp': Crippen.MolLogP(mol),
+                            'qed': QED.qed(mol),
+                            'hba': Descriptors.NumHAcceptors(mol),
+                            'hbd': Descriptors.NumHDonors(mol),
+                            'valid': True
+                        }
+                        properties.append(props)
+                        valid_indices.append(start_idx + i)
+                except:
+                    continue
         
         df = pd.DataFrame(properties)
-        print(f"Calculated properties for {len(df)} valid molecules")
+        print(f"Calculated properties for {len(df)} valid molecules ({100*len(df)/len(smiles_series):.1f}% valid)")
         return df, valid_indices
     
-    def create_stratification_bins(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create stratification bins based on molecular properties"""
-        print("Creating stratification bins...")
+    def create_stratification_bins(self, df: pd.DataFrame, n_bins: int = 5) -> pd.DataFrame:
+        """Create balanced stratification bins using percentiles"""
+        print(f"Creating {n_bins}x{n_bins} stratification bins...")
         
-        # Molecular weight bins
-        df['mw_bin'] = pd.cut(df['mw'], bins=[0, 200, 300, 400, 500, 1000], 
-                             labels=['<200', '200-300', '300-400', '400-500', '>500'])
-        
-        # LogP bins
-        df['logp_bin'] = pd.cut(df['logp'], bins=[-10, -1, 1, 3, 5, 10], 
-                               labels=['<-1', '-1-1', '1-3', '3-5', '>5'])
-        
-        # QED bins
-        df['qed_bin'] = pd.cut(df['qed'], bins=[0, 0.3, 0.5, 0.7, 0.9, 1.0], 
-                              labels=['<0.3', '0.3-0.5', '0.5-0.7', '0.7-0.9', '>0.9'])
+        # Use percentile-based binning for balance
+        df['mw_bin'] = pd.qcut(df['mw'], q=n_bins, labels=[f'MW_{i}' for i in range(n_bins)], duplicates='drop')
+        df['logp_bin'] = pd.qcut(df['logp'], q=n_bins, labels=[f'LogP_{i}' for i in range(n_bins)], duplicates='drop')
+        df['qed_bin'] = pd.qcut(df['qed'], q=n_bins, labels=[f'QED_{i}' for i in range(n_bins)], duplicates='drop')
         
         # Create combined stratification key
-        df['strat_key'] = df['mw_bin'].astype(str) + '_' + \
-                         df['logp_bin'].astype(str) + '_' + \
-                         df['qed_bin'].astype(str)
+        df['strat_key'] = (df['mw_bin'].astype(str) + '_' + 
+                          df['logp_bin'].astype(str) + '_' + 
+                          df['qed_bin'].astype(str))
         
         # Remove any rows with NaN bins
         df = df.dropna(subset=['mw_bin', 'logp_bin', 'qed_bin'])
         
         print(f"Created {df['strat_key'].nunique()} unique stratification groups")
-        print("Distribution of stratification groups:")
-        print(df['strat_key'].value_counts().head(10))
+        
+        # Show bin ranges
+        print("\nBin ranges:")
+        for col, label in [('mw', 'Molecular Weight'), ('logp', 'LogP'), ('qed', 'QED')]:
+            bin_col = f'{col}_bin'
+            if bin_col in df.columns:
+                for bin_val in df[bin_col].cat.categories:
+                    bin_data = df[df[bin_col] == bin_val][col]
+                    print(f"  {bin_val}: {bin_data.min():.2f} - {bin_data.max():.2f}")
         
         return df
     
     def load_stratified_sample(self, parquet_path: str, sample_size: int = 50000, 
-                              cache_path: str = "./stratified.parquet") -> pd.DataFrame:
-        """Load stratified sample from ZINC parquet file with caching"""
+                              cache_path: str = "./stratified.parquet",
+                              random_subsample_size: int = 500000) -> pd.DataFrame:
+        """
+        Efficient stratified sampling: Random sample first, then stratify
+        
+        Args:
+            parquet_path: Path to full ZINC parquet file
+            sample_size: Final stratified sample size
+            cache_path: Where to save/load cached results
+            random_subsample_size: Initial random sample size for stratification
+        """
         
         # Check if cached stratified sample exists
         if os.path.exists(cache_path):
@@ -389,18 +669,22 @@ class StratifiedZINCLoader:
                 cached_df = pd.read_parquet(cache_path)
                 print(f"Loaded {len(cached_df)} molecules from cache")
                 
-                # Check if cache has enough molecules
-                if len(cached_df) >= sample_size:
-                    # If cache has more molecules than needed, sample from it
-                    if len(cached_df) > sample_size:
-                        print(f"Sampling {sample_size} molecules from cached {len(cached_df)} molecules")
-                        sampled_df = cached_df.sample(n=sample_size, random_state=self.random_state)
-                        return sampled_df
+                # Verify cache has required columns
+                required_cols = ['smiles', 'mw', 'logp', 'qed', 'hba', 'hbd', 'valid']
+                if all(col in cached_df.columns for col in required_cols):
+                    # If cache has enough molecules, sample from it
+                    if len(cached_df) >= sample_size:
+                        if len(cached_df) > sample_size:
+                            print(f"Sampling {sample_size} molecules from cached {len(cached_df)} molecules")
+                            sampled_df = cached_df.sample(n=sample_size, random_state=self.random_state)
+                            return sampled_df
+                        else:
+                            return cached_df
                     else:
-                        return cached_df
+                        print(f"Warning: Cache only has {len(cached_df)} molecules, need {sample_size}")
+                        print("Will regenerate stratified sample...")
                 else:
-                    print(f"Warning: Cache only has {len(cached_df)} molecules, need {sample_size}")
-                    print("Will regenerate stratified sample...")
+                    print("Warning: Cache missing required columns, regenerating...")
             except Exception as e:
                 print(f"Error loading cached file: {e}")
                 print("Will regenerate stratified sample...")
@@ -408,60 +692,124 @@ class StratifiedZINCLoader:
             print(f"No cached stratified sample found at {cache_path}")
             print("Will create new stratified sample...")
         
-        # Generate new stratified sample
-        print(f"Loading ZINC dataset from {parquet_path}")
+        # STEP 1: Random subsample from full dataset
+        print(f"\n=== STEP 1: Random Subsampling ===")
+        print(f"Loading random sample of {random_subsample_size} molecules from {parquet_path}")
         
-        # Load full dataset
-        df_full = pd.read_parquet(parquet_path)
-        print(f"Loaded {len(df_full)} molecules from ZINC")
+        try:
+            # First, get dataset info
+            df_info = pd.read_parquet(parquet_path, columns=[0])  # Read just first column to get size
+            total_molecules = len(df_info)
+            print(f"Total molecules in dataset: {total_molecules:,}")
+            
+            # Calculate sampling fraction
+            if total_molecules <= random_subsample_size:
+                print("Dataset smaller than subsample size, using entire dataset")
+                df_random = pd.read_parquet(parquet_path)
+            else:
+                sample_fraction = random_subsample_size / total_molecules
+                print(f"Sampling {sample_fraction:.1%} of dataset ({random_subsample_size:,} molecules)")
+                
+                # Random sample
+                df_random = pd.read_parquet(parquet_path).sample(
+                    n=random_subsample_size, 
+                    random_state=self.random_state
+                )
+            
+            print(f"Random subsample loaded: {len(df_random)} molecules")
+            
+        except Exception as e:
+            print(f"Error with random sampling: {e}")
+            print("Attempting to load first chunk...")
+            df_random = pd.read_parquet(parquet_path).head(random_subsample_size)
         
         # Get SMILES column
-        smiles_col = 'smiles' if 'smiles' in df_full.columns else df_full.columns[0]
+        smiles_col = 'smiles' if 'smiles' in df_random.columns else df_random.columns[0]
         print(f"Using column '{smiles_col}' for SMILES")
         
-        # Calculate properties for stratification
-        props_df, valid_indices = self.calculate_molecular_properties(df_full[smiles_col])
+        # STEP 2: Calculate properties for random subsample
+        print(f"\n=== STEP 2: Property Calculation ===")
+        props_df, valid_indices = self.calculate_molecular_properties_batch(df_random[smiles_col])
         
         if len(props_df) < sample_size:
             print(f"Warning: Only {len(props_df)} valid molecules available, using all")
             stratified_sample = props_df
         else:
-            # Create stratification bins
-            props_df = self.create_stratification_bins(props_df)
+            # STEP 3: Stratified sampling from property-calculated subset
+            print(f"\n=== STEP 3: Stratified Sampling ===")
+            props_df = self.create_stratification_bins(props_df, n_bins=5)
             
             # Filter groups with sufficient data
             group_counts = props_df['strat_key'].value_counts()
-            valid_groups = group_counts[group_counts >= 5].index  # At least 5 molecules per group
-            props_df = props_df[props_df['strat_key'].isin(valid_groups)]
+            min_per_group = max(1, sample_size // (len(group_counts) * 2))  # At least 1, ideally more
+            valid_groups = group_counts[group_counts >= min_per_group].index
             
-            print(f"Using {len(valid_groups)} groups with sufficient data")
-            
-            # Stratified sampling
-            try:
-                splitter = StratifiedShuffleSplit(n_splits=1, test_size=sample_size, 
-                                                random_state=self.random_state)
+            if len(valid_groups) == 0:
+                print("No groups with sufficient data, using random sampling")
+                stratified_sample = props_df.sample(n=min(sample_size, len(props_df)), 
+                                                  random_state=self.random_state)
+            else:
+                props_df_filtered = props_df[props_df['strat_key'].isin(valid_groups)]
+                print(f"Using {len(valid_groups)} groups with ≥{min_per_group} molecules each")
+                print(f"Filtered to {len(props_df_filtered)} molecules for stratification")
                 
-                # Use stratification key for splitting
-                train_idx, sample_idx = next(splitter.split(props_df, props_df['strat_key']))
-                
-                stratified_sample = props_df.iloc[sample_idx].copy()
-                
-                print(f"Stratified sampling completed: {len(stratified_sample)} molecules")
-                print("Sample distribution:")
-                print(stratified_sample['strat_key'].value_counts().head(10))
-                
-            except Exception as e:
-                print(f"Stratified sampling failed: {e}")
-                print("Using random sampling as fallback")
-                stratified_sample = props_df.sample(n=min(sample_size, len(props_df)), random_state=self.random_state)
+                # Stratified sampling
+                try:
+                    if len(props_df_filtered) <= sample_size:
+                        stratified_sample = props_df_filtered
+                        print(f"Using all {len(stratified_sample)} molecules (less than target)")
+                    else:
+                        # Use StratifiedShuffleSplit
+                        splitter = StratifiedShuffleSplit(
+                            n_splits=1, 
+                            test_size=sample_size,
+                            random_state=self.random_state
+                        )
+                        
+                        train_idx, sample_idx = next(splitter.split(
+                            props_df_filtered, 
+                            props_df_filtered['strat_key']
+                        ))
+                        
+                        stratified_sample = props_df_filtered.iloc[sample_idx].copy()
+                        
+                        print(f"Stratified sampling completed: {len(stratified_sample)} molecules")
+                        
+                        # Show final distribution
+                        print("\nFinal sample distribution:")
+                        strat_dist = stratified_sample['strat_key'].value_counts().head(10)
+                        for group, count in strat_dist.items():
+                            print(f"  {group}: {count} molecules")
+                        
+                except Exception as e:
+                    print(f"Stratified sampling failed: {e}")
+                    print("Using random sampling as fallback")
+                    stratified_sample = props_df_filtered.sample(
+                        n=min(sample_size, len(props_df_filtered)), 
+                        random_state=self.random_state
+                    )
         
-        # Save to cache
+        # Remove stratification columns for cleaner output
+        columns_to_keep = ['smiles', 'mw', 'logp', 'qed', 'hba', 'hbd', 'valid']
+        stratified_sample = stratified_sample[columns_to_keep]
+        
+        # STEP 4: Cache the results
+        print(f"\n=== STEP 4: Caching Results ===")
         try:
             print(f"Saving stratified sample to cache: {cache_path}")
             stratified_sample.to_parquet(cache_path, index=False)
             print(f"Successfully cached {len(stratified_sample)} molecules")
         except Exception as e:
             print(f"Warning: Could not save cache file: {e}")
+        
+        # Print final statistics
+        print(f"\n=== FINAL SAMPLE STATISTICS ===")
+        print(f"Sample size: {len(stratified_sample)}")
+        print(f"Valid molecules: {stratified_sample['valid'].sum()}")
+        print(f"MW range: {stratified_sample['mw'].min():.1f} - {stratified_sample['mw'].max():.1f}")
+        print(f"LogP range: {stratified_sample['logp'].min():.2f} - {stratified_sample['logp'].max():.2f}")
+        print(f"QED range: {stratified_sample['qed'].min():.3f} - {stratified_sample['qed'].max():.3f}")
+        print(f"Average QED: {stratified_sample['qed'].mean():.3f}")
         
         return stratified_sample
 
@@ -1050,7 +1398,7 @@ class BoundaryExplorationGA:
         return valid_data
     
     def run_boundary_exploration(self) -> List[Dict]:
-        """Run the boundary exploration genetic algorithm"""
+        """Run the boundary exploration genetic algorithm with enhanced visualization"""
         print("=== BOUNDARY EXPLORATION GENETIC ALGORITHM ===")
         print(f"Population size: {self.population_size}")
         print(f"Generations: {self.generations}")
@@ -1076,7 +1424,7 @@ class BoundaryExplorationGA:
         
         print(f"Initial population: {len(population)} molecules")
         
-        # Track all generation data
+        # Track all generation data for visualization
         all_generation_data = []
         
         # Evolution loop
@@ -1086,7 +1434,190 @@ class BoundaryExplorationGA:
             # Save generation data
             self.save_generation_data(gen + 1, population)
             
-            # Collect data for analysis
+            # Collect data for analysis and visualization
+            gen_data = self.collect_generation_data(gen + 1, population)
+            all_generation_data.append(gen_data)
+            
+            # Calculate statistics
+            valid_count = sum(1 for mol in population if self.is_valid_smiles(mol))
+            unique_count = len(set(population))
+            diversity = self.calculate_population_diversity(population)
+            
+            # Boundary exploration statistics
+            outside_boundary_count = 0
+            boundary_distances = []
+            
+            for mol in population:
+                if self.is_valid_smiles(mol):
+                    boundary_dist = self.boundary_detector.calculate_boundary_distance(mol)
+                    boundary_distances.append(boundary_dist)
+                    if boundary_dist > 0:
+                        outside_boundary_count += 1
+            
+            exploration_rate = outside_boundary_count / valid_count if valid_count > 0 else 0
+            avg_boundary_dist = np.mean(boundary_distances) if boundary_distances else 0
+            
+            # Evaluate fitness
+            fitness_scores = []
+            for mol in population:
+                if self.is_valid_smiles(mol):
+                    fitness = self.boundary_aware_fitness(mol)
+                    fitness_scores.append((mol, fitness))
+                else:
+                    fitness_scores.append((mol, 0.0))
+            
+            fitness_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            # Track statistics
+            fitnesses = [score for _, score in fitness_scores]
+            best_mol, best_fitness = fitness_scores[0]
+            avg_fitness = np.mean(fitnesses)
+            
+            # Calculate drug-likeness statistics
+            qed_scores = []
+            lipinski_compliant = 0
+            
+            for mol in population:
+                if self.is_valid_smiles(mol):
+                    mol_obj = Chem.MolFromSmiles(mol)
+                    if mol_obj:
+                        qed = QED.qed(mol_obj)
+                        qed_scores.append(qed)
+                        
+                        # Check Lipinski compliance
+                        mw = Descriptors.MolWt(mol_obj)
+                        logp = Crippen.MolLogP(mol_obj)
+                        hbd = Descriptors.NumHDonors(mol_obj)
+                        hba = Descriptors.NumHAcceptors(mol_obj)
+                        violations = sum([mw > 500, logp > 5, hbd > 5, hba > 10])
+                        
+                        if violations == 0:
+                            lipinski_compliant += 1
+            
+            avg_qed = np.mean(qed_scores) if qed_scores else 0
+            lipinski_rate = lipinski_compliant / valid_count if valid_count > 0 else 0
+            
+            self.generation_stats.append({
+                'generation': gen + 1,
+                'best_fitness': best_fitness,
+                'avg_fitness': avg_fitness,
+                'best_molecule': best_mol,
+                'valid_molecules': valid_count,
+                'unique_molecules': unique_count,
+                'diversity': diversity,
+                'exploration_rate': exploration_rate,
+                'avg_boundary_distance': avg_boundary_dist,
+                'avg_qed': avg_qed,
+                'lipinski_compliance_rate': lipinski_rate,
+                'validity_rate': valid_count / len(population)
+            })
+            
+            # Print generation statistics
+            print(f"Best fitness: {best_fitness:.3f}")
+            print(f"Avg fitness: {avg_fitness:.3f}")
+            print(f"Valid molecules: {valid_count}/{len(population)} ({100*valid_count/len(population):.1f}%)")
+            print(f"Unique molecules: {unique_count}")
+            print(f"Exploration rate: {100*exploration_rate:.1f}% outside boundary")
+            print(f"Avg boundary distance: {avg_boundary_dist:.3f}")
+            print(f"Avg QED: {avg_qed:.3f}")
+            print(f"Lipinski compliance: {100*lipinski_rate:.1f}%")
+            print(f"Diversity: {diversity:.3f}")
+            print(f"Best molecule: {best_mol}")
+            
+            # Create boundary visualization every 5 generations
+            if (gen + 1) % 5 == 0 or gen + 1 == self.generations:
+                try:
+                    current_molecules = [mol for mol in population if self.is_valid_smiles(mol)]
+                    if current_molecules:
+                        vis_path = os.path.join(self.output_dir, f"boundary_gen_{gen+1:03d}.png")
+                        self.boundary_detector.visualize_boundary_2d(
+                            sample_molecules=current_molecules[:50],  # Limit for clarity
+                            save_path=vis_path,
+                            method="MDS"  # Use MDS instead of PCA
+                        )
+                except Exception as e:
+                    print(f"Warning: Could not create boundary visualization: {e}")
+            
+            # Selection and reproduction
+            valid_survivors = [(mol, score) for mol, score in fitness_scores 
+                             if self.is_valid_smiles(mol) and score > 0]
+            
+            if len(valid_survivors) < 5:
+                simple_mols = ["CCO", "CC", "CO", "CCC", "CCN", "CN"]
+                for simple_mol in simple_mols:
+                    valid_survivors.append((simple_mol, self.boundary_aware_fitness(simple_mol)))
+                    if len(valid_survivors) >= 10:
+                        break
+            
+            # Use boundary-aware selection
+            survivors = self.diversity_selection(population, valid_survivors)
+            
+            # Create next generation
+            new_population = survivors.copy()
+            
+            while len(new_population) < self.population_size:
+                # Tournament selection
+                parent1 = random.choice(survivors)
+                parent2 = random.choice(survivors)
+                
+                # Avoid identical parents
+                attempts = 0
+                while parent1 == parent2 and attempts < 5:
+                    parent2 = random.choice(survivors)
+                    attempts += 1
+                
+                # Boundary-aware crossover
+                child1, child2 = self.boundary_aware_crossover(parent1, parent2)
+                
+                # Boundary-guided mutation
+                child1 = self.boundary_guided_mutation(child1)
+                child2 = self.boundary_guided_mutation(child2)
+                
+                new_population.extend([child1, child2])
+            
+            population = new_population[:self.population_size]
+        
+        # Create comprehensive visualization at the end
+        print("\nCreating comprehensive visualizations...")
+        try:
+            # Generation progression visualization
+            if all_generation_data:
+                progression_path = os.path.join(self.output_dir, "generation_progression_MDS.png")
+                self.boundary_detector.visualize_generation_progression(
+                    all_generation_data, 
+                    save_path=progression_path,
+                    method="MDS"
+                )
+        except Exception as e:
+            print(f"Warning: Could not create progression visualization: {e}")
+        
+        # Create final boundary visualization with all methods
+        try:
+            final_molecules = [mol for mol in population if self.is_valid_smiles(mol)]
+            if final_molecules:
+                # MDS visualization
+                mds_path = os.path.join(self.output_dir, "final_boundary_MDS.png")
+                self.boundary_detector.visualize_boundary_2d(
+                    sample_molecules=final_molecules,
+                    save_path=mds_path,
+                    method="MDS"
+                )
+                
+                # Try UMAP if available
+                try:
+                    umap_path = os.path.join(self.output_dir, "final_boundary_UMAP.png")
+                    self.boundary_detector.visualize_boundary_2d(
+                        sample_molecules=final_molecules,
+                        save_path=umap_path,
+                        method="UMAP"
+                    )
+                except:
+                    print("UMAP visualization not available")
+                    
+        except Exception as e:
+            print(f"Warning: Could not create final visualizations: {e}")
+        
+        return self.generation_stats Collect data for analysis
             gen_data = self.collect_generation_data(gen + 1, population)
             all_generation_data.append(gen_data)
             
@@ -1372,33 +1903,44 @@ def run_boundary_exploration_pipeline(parquet_path: str = "../mol_generative/zin
         print(f"Error loading ZINC dataset: {e}")
         return None
     
-    # Step 2: Boundary detection using ECFP4 + Convex Hull
-    print("\n2. CHEMICAL SPACE BOUNDARY DETECTION")
-    print("-" * 50)
-    
-    boundary_detector = ChemicalSpaceBoundaryDetector(fingerprint_bits=2048, pca_components=50)
-    
-    try:
-        boundary_stats = boundary_detector.fit_boundary(zinc_sample['smiles'].tolist())
-        print("Boundary detection completed successfully")
+        # Visualize boundary with MDS/UMAP instead of PCA
+        print("\n2. CHEMICAL SPACE BOUNDARY DETECTION")
+        print("-" * 50)
         
-        # Print boundary statistics
-        print(f"\nBoundary statistics:")
-        for key, value in boundary_stats.items():
-            if isinstance(value, float):
-                print(f"  {key}: {value:.3f}")
-            else:
-                print(f"  {key}: {value}")
+        boundary_detector = ChemicalSpaceBoundaryDetector(fingerprint_bits=2048, pca_components=50)
         
-        # Visualize boundary
-        boundary_detector.visualize_boundary_2d(
-            sample_molecules=zinc_sample['smiles'].sample(min(100, len(zinc_sample))).tolist(),
-            save_path=os.path.join(output_dir, "zinc_boundary_visualization.png")
-        )
-        
-    except Exception as e:
-        print(f"Error in boundary detection: {e}")
-        return None
+        try:
+            boundary_stats = boundary_detector.fit_boundary(zinc_sample['smiles'].tolist())
+            print("Boundary detection completed successfully")
+            
+            # Print boundary statistics
+            print(f"\nBoundary statistics:")
+            for key, value in boundary_stats.items():
+                if isinstance(value, float):
+                    print(f"  {key}: {value:.3f}")
+                else:
+                    print(f"  {key}: {value}")
+            
+            # Visualize boundary using MDS instead of PCA
+            boundary_detector.visualize_boundary_2d(
+                sample_molecules=zinc_sample['smiles'].sample(min(100, len(zinc_sample))).tolist(),
+                save_path=os.path.join(output_dir, "zinc_boundary_MDS.png"),
+                method="MDS"
+            )
+            
+            # Also try UMAP if available
+            try:
+                boundary_detector.visualize_boundary_2d(
+                    sample_molecules=zinc_sample['smiles'].sample(min(100, len(zinc_sample))).tolist(),
+                    save_path=os.path.join(output_dir, "zinc_boundary_UMAP.png"),
+                    method="UMAP"
+                )
+            except:
+                print("UMAP not available, skipping UMAP visualization")
+            
+        except Exception as e:
+            print(f"Error in boundary detection: {e}")
+            return None
     
     # Step 3: Load fragment library
     print("\n3. LOADING FRAGMENT LIBRARY")
@@ -1450,10 +1992,21 @@ def run_boundary_exploration_pipeline(parquet_path: str = "../mol_generative/zin
                 final_molecules = final_df[final_df['Valid'] == True]['SMILES'].tolist()
                 
                 if final_molecules:
+                    # Create multiple visualizations showing exploration
                     boundary_detector.visualize_boundary_2d(
                         sample_molecules=final_molecules,
-                        save_path=os.path.join(output_dir, "final_boundary_exploration.png")
+                        save_path=os.path.join(output_dir, "final_exploration_MDS.png"),
+                        method="MDS"
                     )
+                    
+                    try:
+                        boundary_detector.visualize_boundary_2d(
+                            sample_molecules=final_molecules,
+                            save_path=os.path.join(output_dir, "final_exploration_UMAP.png"),
+                            method="UMAP"
+                        )
+                    except:
+                        print("UMAP visualization not available")
                 else:
                     print("No valid molecules found in final generation for visualization")
             except Exception as e:
@@ -1462,6 +2015,19 @@ def run_boundary_exploration_pipeline(parquet_path: str = "../mol_generative/zin
         print("\nPipeline completed successfully!")
         print(f"Results saved to: {output_dir}/")
         print(f"Cached stratified sample: {cache_path}")
+        
+        # Print exploration summary
+        if stats:
+            final_stats = stats[-1]
+            print(f"\n=== EXPLORATION SUMMARY ===")
+            print(f"Final exploration rate: {100*final_stats['exploration_rate']:.1f}%")
+            print(f"Final QED score: {final_stats['avg_qed']:.3f}")
+            print(f"Final Lipinski compliance: {100*final_stats['lipinski_compliance_rate']:.1f}%")
+            
+            # Find peak exploration
+            max_exploration = max(s['exploration_rate'] for s in stats)
+            max_gen = next(s['generation'] for s in stats if s['exploration_rate'] == max_exploration)
+            print(f"Peak exploration: {100*max_exploration:.1f}% in generation {max_gen}")
         
         return ga, boundary_detector, stats
         
